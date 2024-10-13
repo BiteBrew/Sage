@@ -1,0 +1,9 @@
+openai
+colorama
+psutil
+rich
+prompt_toolkit
+markdown
+PyQt5
+cryptography
+base64
