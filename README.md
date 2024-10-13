@@ -34,3 +34,5 @@ This project is licensed under the "Sage Advice" license. Use it wisely, and may
 ---
 
 Remember, in the world of Sage, we don't have system issues – we have opportunities for deeper understanding and optimization. Happy administrating! 🌿✨
+
+![Sage](sage.png)
