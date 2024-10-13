@@ -2,6 +2,7 @@ capture.png
 api.enc
 secret.key
 capture.png
+Sage.code-workspace
 dist
 build
 sage_deb_package
