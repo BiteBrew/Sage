@@ -76,7 +76,7 @@ def manage_api_key():
 
 def options_menu(options):
     original_options = options.copy()
-    available_models = load_available_models()
+    models = load_available_models()
 
     while True:
         console.print("\n[bold]Options Menu:[/bold]")
@@ -90,18 +90,58 @@ def options_menu(options):
         choice = input("\nEnter your choice (1-6): ").strip()
 
         if choice == '1':
-            console.print("\nAvailable models:")
-            for i, model in enumerate(available_models, 1):
-                console.print(f"{i}. {model}")
-            model_choice = input("Enter the number of the model you want to use: ").strip()
-            try:
-                model_index = int(model_choice) - 1
-                if 0 <= model_index < len(available_models):
-                    options['model'] = available_models[model_index]
+            # Show provider selection
+            console.print("\nSelect model provider:")
+            console.print("1. Ollama (local models, recommended)")
+            console.print("2. OpenAI (cloud models)")
+            
+            provider_choice = input("Enter choice (1-2): ").strip()
+            
+            if provider_choice == '1':
+                if not models['ollama']:
+                    console.print("[warning]No Ollama models found. Please install models using 'ollama pull llama3.2:latest'[/warning]")
+                    console.print("[info]Switching to OpenAI gpt-4o-mini as fallback...[/info]")
+                    options['model'] = 'gpt-4o-mini'
+                    options['model_provider'] = 'openai'
+                    continue
+                    
+                console.print("\nAvailable Ollama models:")
+                for i, model in enumerate(models['ollama'], 1):
+                    if model == 'llama3.2:latest':
+                        console.print(f"{i}. {model} [green](recommended)[/green]")
+                    else:
+                        console.print(f"{i}. {model}")
+                    
+                model_choice = input("Enter the number of the model you want to use: ").strip()
+                try:
+                    model_index = int(model_choice) - 1
+                    if 0 <= model_index < len(models['ollama']):
+                        options['model'] = models['ollama'][model_index]
+                        options['model_provider'] = 'ollama'
+                    else:
+                        console.print("[warning]Invalid model number. No changes made.[/warning]")
+                except ValueError:
+                    console.print("[warning]Invalid input. No changes made.[/warning]")
+                    
+            elif provider_choice == '2':
+                console.print("\nAvailable OpenAI models:")
+                console.print("1. gpt-4o-mini [green](recommended - faster & more cost-effective)[/green]")
+                console.print("2. gpt-4o")
+
+                model_choice = input("Enter the number of the model you want to use (1-2): ").strip()
+                if model_choice == '1':
+                    options['model'] = 'gpt-4o-mini'
+                    options['model_provider'] = 'openai'
+                elif model_choice == '2':
+                    console.print("[yellow]Note: gpt-4o-mini is recommended for most use cases[/yellow]")
+                    confirm = input("Are you sure you want to use gpt-4o? (y/n): ").strip().lower()
+                    if confirm == 'y':
+                        options['model'] = 'gpt-4o'
+                        options['model_provider'] = 'openai'
+                    else:
+                        console.print("[info]Keeping current model selection.[/info]")
                 else:
-                    console.print("[warning]Invalid model number. No changes made.[/warning]")
-            except ValueError:
-                console.print("[warning]Invalid input. No changes made.[/warning]")
+                    console.print("[warning]Invalid choice. No changes made.[/warning]")
         elif choice == '2':
             new_temp = input("Enter new temperature (0.0 - 1.0): ").strip()
             try:
