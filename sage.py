@@ -253,7 +253,6 @@ def execute_bash_command(command, options):
     
     try:
         subprocess.Popen(cmd)
-        console.print(f"[bold green]Executing command: [/] {command}")
     except FileNotFoundError:
         console.print(f"[red]Terminal emulator '{terminal}' not found. Please install it or specify a different one in the configuration.[/red]")
     except Exception as e:
@@ -322,8 +321,14 @@ def execute_ollama_request(conversation, options):
         console.print(f"[red]Error communicating with Ollama: {e}[/red]")
         return None
 
-def create_greeting(conversation, system_info):
+def create_greeting(conversation, system_info, summary=None):
     """Create a personalized greeting based on known information"""
+    
+    # Get the system prompt from conversation
+    system_prompt = next((msg['content'] for msg in conversation 
+                         if msg['role'] == 'system' 
+                         and msg['content'] != system_info 
+                         and 'Previous conversation summary' not in msg['content']), None)
     
     # Parse system_info into structured data
     info_lines = system_info.split('\n')
@@ -335,11 +340,11 @@ def create_greeting(conversation, system_info):
     
     # Create a focused greeting query with specific instructions
     greeting_query = (
-        f"As Sage, provide a concise welcome message that includes:\n"
-        f"1. A brief greeting as a technical advisor\n"
-        f"2. Key system details (focus on OS, CPU, RAM, and uptime only):\n"
-        f"3. A short paragraph inviting technical questions and describing the system's capabilities.\n\n"
-        f"4. A summary of the user's key points from previous conversations and any goals they've set."
+        f"Following this system prompt: '{system_prompt}'\n\n"
+        f"As the digital sage and AI linux system administrator, craft a welcome message that includes:\n"
+        f"1. An introduction of yourself as a linux system administrator. Use the user_name in the greeting.\n"
+        f"2. A precise technical snapshot of the system using runtime system information: {system_info}\n"
+        f"3. An short invitation to explore the technological abilities of this system, hinting at its latent computational superpowers\n\n"
     )
     
     # Extract previous context if available
@@ -349,6 +354,9 @@ def create_greeting(conversation, system_info):
     
     if tech_details:
         greeting_query += f"\nIncorporate relevant previous context: {tech_details}"
+    
+    if summary:
+        greeting_query += f"\nPrevious conversation summary: {summary}"
     
     return greeting_query
 
@@ -361,21 +369,25 @@ def main():
     system_prompt = load_system_prompt()
     system_info = gather_system_info()
     previous_conversation = load_conversation()
+
+    # Initialize summary as None or an empty string
+    summary = None
     
     # Initialize new conversation with system context
     conversation = [
         {'role': 'system', 'content': system_prompt},
         {'role': 'system', 'content': system_info}
-    ]
+    ]    
     
     # If there's a previous conversation, summarize it
     if previous_conversation and len(previous_conversation) > 2:
         summary = summarize_conversation(previous_conversation, options)
-        conversation.append({'role': 'system', 'content': f"Previous conversation summary: {summary}"})
-        console.print(Panel(Markdown(summary), title="Previous Conversation Summary", border_style="cyan"))
-    
+        if summary:
+            conversation.append({'role': 'system', 'content': f"Previous conversation summary: {summary}"})
+            console.print(Panel(Markdown(summary), title="Previous Conversation Summary", border_style="cyan"))    
+            
     # Create greeting that includes system info
-    greeting_query = create_greeting(conversation, system_info)
+    greeting_query = create_greeting(conversation, system_info, summary)
 
     try:
         if options['model_provider'] == 'ollama':
@@ -387,13 +399,12 @@ def main():
             greeting_response = openai.ChatCompletion.create(
                 model=options['model'],
                 messages=conversation + [{'role': 'user', 'content': greeting_query}],
-                temperature=1,
+                temperature=0.7,
                 max_tokens=options['max_tokens']
             )
             greeting_message = greeting_response['choices'][0]['message']['content']
         
         console.print(Rule())
-        console.print("[bold green]Welcome to Sage, your wise system advisor:[/bold green]")
         console.print(Markdown(greeting_message))
         conversation.append({'role': 'assistant', 'content': greeting_message})
     except Exception as e:
@@ -428,8 +439,7 @@ def main():
         'exit': lambda: exit_program(conversation)
     }
 
-    console.print(Rule())
-    console.print("[bold green]How may I assist you today?[/bold green] (type 'exit' to quit or 'help' to show commands)")
+    console.print("\n(type 'exit' to quit or 'help' to show commands)")
 
     # Setup unified history for commands and AI suggestions
     history = InMemoryHistory()
@@ -501,7 +511,7 @@ def main():
                 
                 # Display the response
                 console.print(Rule())
-                console.print("[bold yellow]Assistant:[/bold yellow]")
+                console.print("[bold yellow]Sage:[/bold yellow]")
                 console.print(Markdown(assistant_message))
                 
                 # Add response to conversation history
