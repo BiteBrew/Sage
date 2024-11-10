@@ -28,6 +28,7 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.key_binding import KeyBindings
 import re
+import requests
 
 console = Console()
 
@@ -182,29 +183,24 @@ def capture_and_process(conversation, options):
         print("Image capture failed or was cancelled.")
 
 def summarize_conversation(conversation, options):
-    summary_prompt = """Please summarize the following conversation by extracting key points about the user only. Organize the summary into these categories:
-
-1. User Preferences: The user's likes, dislikes, and preferences.
-2. Interests: Topics the user is interested in or passionate about.
-3. Goals: Short-term and long-term objectives the user has attempted to achieve.
-4. Personal Information: Relevant personal details the user has shared and their system information.
-
-Gather as much information about the user and their system beyond that gathered at initiation. Remember their goals. 
-Do not include any details about the AI assistant's capabilities, traits."""
-
-    for message in conversation:
-        if message['role'] != 'system':
-            summary_prompt += f"\n{message['role'].capitalize()}: {message['content']}"
+    summary_prompt = """Please summarize the following conversation..."""
     
     try:
-        summary_response = openai.ChatCompletion.create(
-            model=options['model'],
-            messages=[{'role': 'user', 'content': summary_prompt}],
-            temperature=0.2,
-            max_tokens=500
-        )
-        return summary_response['choices'][0]['message']['content']
-    except openai.error.OpenAIError as e:
+        if options['model_provider'] == 'ollama':
+            summary_response = execute_ollama_request([{
+                'role': 'user',
+                'content': summary_prompt
+            }], options)
+            return summary_response
+        else:
+            summary_response = openai.ChatCompletion.create(
+                model=options['model'],
+                messages=[{'role': 'user', 'content': summary_prompt}],
+                temperature=0.2,
+                max_tokens=500
+            )
+            return summary_response['choices'][0]['message']['content']
+    except Exception as e:
         console.print(f"[red]An error occurred while summarizing the conversation: {e}[/red]")
         return "Unable to generate summary due to an error."
 
@@ -257,157 +253,182 @@ def execute_bash_command(command, options):
     
     try:
         subprocess.Popen(cmd)
-        console.print(f"[bold green]Executing command in {terminal}: [/] {command}")
     except FileNotFoundError:
         console.print(f"[red]Terminal emulator '{terminal}' not found. Please install it or specify a different one in the configuration.[/red]")
     except Exception as e:
         console.print(f"[red]Failed to execute command '{command}' in terminal '{terminal}': {e}[/red]")
 
-def handle_bash_commands(bash_commands, conversation, options):
+def handle_bash_commands(bash_commands, conversation, options, history):
     """
-    Handles the execution of a list of bash commands by spawning new terminal windows.
-    Allows users to cycle through commands, execute them independently, or return to the main prompt.
+    Handles the execution of bash commands by adding them to history and executing them.
     
     Args:
-        bash_commands (List[str]): Initial list of bash commands to execute.
+        bash_commands (List[str]): List of bash commands to execute.
         conversation (List[Dict[str, str]]): The conversation history.
         options (Dict[str, Any]): Configuration options.
+        history: The command history object.
     """
     if not bash_commands:
         return
 
-    all_commands = bash_commands.copy()
-    current_command_index = 0
-
-    history = InMemoryHistory()
-    for cmd in all_commands:
+    # Add commands to history
+    for cmd in bash_commands:
         history.append_string(cmd)
 
-    kb = KeyBindings()
-
-    @kb.add('enter')
-    def _(event):
-        event.current_buffer.validate_and_handle()
-
-    @kb.add('up')
-    def _(event):
-        nonlocal current_command_index
-        current_command_index = (current_command_index - 1) % len(all_commands)
-        event.current_buffer.text = all_commands[current_command_index]
-
-    @kb.add('down')
-    def _(event):
-        nonlocal current_command_index
-        current_command_index = (current_command_index + 1) % len(all_commands)
-        event.current_buffer.text = all_commands[current_command_index]
-
-    session = PromptSession(
-        history=history,
-        key_bindings=kb,
-        enable_history_search=False
-    )
-
-    console.print(f"\n[bold yellow]Bash command(s) detected. Use up/down arrows to cycle through commands, Enter to execute, or type 'exit' to return to the main prompt.[/bold yellow]")
-
-    while True:
+    # Execute the commands
+    for command in bash_commands:
         try:
-            user_input = session.prompt(
-                HTML('<ansibrightcyan>Suggested Command (Enter to execute, "exit" to return): </ansibrightcyan>'),
-                default=all_commands[current_command_index] if current_command_index < len(all_commands) else "",
-                refresh_interval=0.5
-            ).strip()
+            subprocess.Popen(cmd)
+            console.print(f"[bold green]Executing command: [/] {command}")
+            conversation.append({'role': 'system', 'content': f"Command executed: {command}"})
+        except Exception as e:
+            console.print(f"[red]Failed to execute command '{command}': {e}[/red]")
 
-            if user_input.lower() == 'exit':
-                console.print("[yellow]Returning to main prompt.[/yellow]")
-                break
+def is_valid_bash_command(command):
+    """
+    Check if a command is a valid bash command by using 'which'.
+    
+    Args:
+        command (str): The command to check.
+        
+    Returns:
+        bool: True if the command exists, False otherwise.
+    """
+    try:
+        # Split the command to get just the executable part
+        cmd_executable = shlex.split(command)[0]
+        # Use 'which' to check if command exists in PATH
+        result = subprocess.run(['which', cmd_executable], 
+                              capture_output=True, 
+                              text=True)
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError, IndexError):
+        return False
 
-            if user_input.lower() == 'skip':
-                console.print("[yellow]Command execution skipped.[/yellow]")
-                current_command_index += 1
-                if current_command_index >= len(all_commands):
-                    current_command_index = 0
-                continue
+def execute_ollama_request(conversation, options):
+    """Execute request to Ollama API"""
+    messages = [msg for msg in conversation if msg['role'] != 'system']
+    
+    try:
+        response = requests.post('http://localhost:11434/api/chat', json={
+            'model': options['model'],
+            'messages': messages,
+            'stream': False
+        })
+        response.raise_for_status()
+        return response.json()['message']['content']
+    except requests.exceptions.RequestException as e:
+        console.print(f"[red]Error communicating with Ollama: {e}[/red]")
+        return None
 
-            if user_input:
-                console.print(f"\n[bold green]Spawning terminal to execute command:[/bold green] {user_input}\n")
-                execute_bash_command(user_input, options)
-
-                conversation.append({'role': 'system', 'content': f"Command executed: {user_input} (output handled in separate terminal)"})
-
-                current_command_index += 1
-                if current_command_index >= len(all_commands):
-                    current_command_index = 0
-
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Command execution interrupted. Type 'exit' to return to main prompt or continue with another command.[/yellow]")
-            continue
-        except EOFError:
-            console.print("\n[red]Unexpected end of input. Returning to main prompt.[/red]")
-            break
-
-    console.print("[bold green]Returning to main conversation prompt.[/bold green]")
+def create_greeting(conversation, system_info, summary=None):
+    """Create a personalized greeting based on known information"""
+    
+    # Get the system prompt from conversation
+    system_prompt = next((msg['content'] for msg in conversation 
+                         if msg['role'] == 'system' 
+                         and msg['content'] != system_info 
+                         and 'Previous conversation summary' not in msg['content']), None)
+    
+    # Parse system_info into structured data
+    info_lines = system_info.split('\n')
+    parsed_info = {}
+    for line in info_lines:
+        if ':' in line:
+            key, value = line.split(':', 1)
+            parsed_info[key.strip()] = value.strip()
+    
+    # Create a focused greeting query with specific instructions
+    greeting_query = (
+        f"Following this system prompt: '{system_prompt}'\n\n"
+        f"As the digital sage and AI linux system administrator, craft a welcome message that includes:\n"
+        f"1. An introduction of yourself as a linux system administrator. Use the user_name in the greeting.\n"
+        f"2. A precise technical snapshot of the system using runtime system information: {system_info}\n"
+        f"3. An short invitation to explore the technological abilities of this system, hinting at its latent computational superpowers\n\n"
+    )
+    
+    # Extract previous context if available
+    tech_details = next((msg['content'] for msg in conversation 
+                        if msg['role'] == 'system' 
+                        and 'Previous technical details:' in msg['content']), None)
+    
+    if tech_details:
+        greeting_query += f"\nIncorporate relevant previous context: {tech_details}"
+    
+    if summary:
+        greeting_query += f"\nPrevious conversation summary: {summary}"
+    
+    return greeting_query
 
 def main():
     ensure_sage_setup()
     openai.api_key = read_api_key()
     options = load_options()
-    conversation = load_conversation()
+    
+    # Load components in order
     system_prompt = load_system_prompt()
+    system_info = gather_system_info()
+    previous_conversation = load_conversation()
 
-    if conversation and len(conversation) > 2:
-        # Existing conversation found, generate summary
-        summary = summarize_conversation(conversation, options)
-        console.print(Panel(Markdown(summary), title="Previous Conversation Summary", border_style="cyan"))
-        
-        # Start fresh conversation with system prompt, new system info, and summary
-        new_system_info = gather_system_info()
-        conversation = [
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'system', 'content': new_system_info},
-            {'role': 'system', 'content': f"Previous conversation summary: {summary}"}
-        ]
-        
-        # Generate and display initial greeting
-        greeting_query = (
-            "Greet the user as Sage, a wise advisor for their system. Briefly mention your capabilities, "
-            "their system information, and acknowledge the previous conversation summary. Then invite them to continue seeking your counsel."
-        )
-    else:
-        # No existing conversation or it's too short, start fresh
-        new_system_info = gather_system_info()
-        conversation = [
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'system', 'content': new_system_info}
-        ]
-        
-        # Generate and display initial greeting
-        greeting_query = (
-            "Greet the user as Sage, a wise advisor for their system. Briefly mention your capabilities and their system information then invite them to seek your counsel."
-        )
+    # Initialize summary as None or an empty string
+    summary = None
+    
+    # Initialize new conversation with system context
+    conversation = [
+        {'role': 'system', 'content': system_prompt},
+        {'role': 'system', 'content': system_info}
+    ]    
+    
+    # If there's a previous conversation, summarize it
+    if previous_conversation and len(previous_conversation) > 2:
+        summary = summarize_conversation(previous_conversation, options)
+        if summary:
+            conversation.append({'role': 'system', 'content': f"Previous conversation summary: {summary}"})
+            console.print(Panel(Markdown(summary), title="Previous Conversation Summary", border_style="cyan"))    
+            
+    # Create greeting that includes system info
+    greeting_query = create_greeting(conversation, system_info, summary)
 
     try:
-        greeting_response = openai.ChatCompletion.create(
-            model=options['model'],
-            messages=conversation + [{'role': 'user', 'content': greeting_query}],
-            temperature=1,
-            max_tokens=options['max_tokens']
-        )
-        greeting_message = greeting_response['choices'][0]['message']['content']
+        if options['model_provider'] == 'ollama':
+            greeting_message = execute_ollama_request([{
+                'role': 'user',
+                'content': greeting_query
+            }], options)
+        else:
+            greeting_response = openai.ChatCompletion.create(
+                model=options['model'],
+                messages=conversation + [{'role': 'user', 'content': greeting_query}],
+                temperature=0.7,
+                max_tokens=options['max_tokens']
+            )
+            greeting_message = greeting_response['choices'][0]['message']['content']
+        
         console.print(Rule())
-        console.print("[bold green]Welcome to Sage, your wise system advisor:[/bold green]")
         console.print(Markdown(greeting_message))
         conversation.append({'role': 'assistant', 'content': greeting_message})
-    except openai.error.OpenAIError as e:
+    except Exception as e:
         console.print(f"[red]An error occurred during initial greeting: {e}[/red]")
 
-    available_models = load_available_models()
+    # Load the available models
+    models = load_available_models()
+    if options['model_provider'] == 'ollama':
+        available_models = models.get('ollama', [])
+    else:
+        available_models = models.get('openai', [])
+
     if options['model'] not in available_models:
-        console.print(f"[red]Current model '{options['model']}' is not in the list of available models.[/red]")
-        options_menu(options)
-        options = load_options()  # Reload options after menu
-        if options['model'] not in available_models:
-            console.print(f"[red]Selected model '{options['model']}' is still invalid. Exiting.[/red]")
-            sys.exit(1)
+        console.print(f"[yellow]Warning: Current model '{options['model']}' is not in the list of available models.[/yellow]")
+        # Set default model based on provider
+        if options['model_provider'] == 'ollama':
+            default_model = available_models[0] if available_models else 'llama2'
+            console.print(f"[yellow]Using default model '{default_model}'[/yellow]")
+            options['model'] = default_model
+        else:
+            default_model = available_models[0] if available_models else 'gpt-4o-mini'
+            console.print(f"[yellow]Using default model '{default_model}'[/yellow]")
+            options['model'] = default_model
+        save_options(options)
 
     COMMANDS = {
         'help': show_help,
@@ -418,11 +439,17 @@ def main():
         'exit': lambda: exit_program(conversation)
     }
 
-    console.print(Rule())
-    console.print("[bold green]How may I assist you today?[/bold green] (type 'exit' to quit or 'help' to show commands)")
+    console.print("\n(type 'exit' to quit or 'help' to show commands)")
 
-    # Setup PromptSession without key bindings
-    session = PromptSession()
+    # Setup unified history for commands and AI suggestions
+    history = InMemoryHistory()
+    
+    # Setup PromptSession with history
+    session = PromptSession(
+        history=history,
+        enable_history_search=True,
+        auto_suggest=AutoSuggestFromHistory()
+    )
 
     style = Style.from_dict({
         'prompt': 'bold cyan',
@@ -430,26 +457,25 @@ def main():
 
     while True:
         try:
-            # Prompt for user input (single-line)
+            # Prompt for user input with history support
             console.print(Rule())
             user_input = session.prompt(
                 [('class:prompt', 'Prompt: ')],
-                multiline=False,  # Single-line input
                 style=style
-            ).strip()  # Strip the input of leading/trailing whitespace
+            ).strip()
 
             # Check if input is empty
             if not user_input:
-                continue  # Skip processing if input is empty
+                continue
 
+            # First check for built-in commands
             if user_input.lower() in COMMANDS:
                 if user_input.lower() == 'options':
                     options_menu(options)
-                    # Reload options in case they were changed
                     options = load_options()
                 elif user_input.lower() == 'clear':
                     conversation = COMMANDS[user_input.lower()]()
-                    if not conversation:  # If conversation is empty after clearing
+                    if not conversation:
                         system_prompt = load_system_prompt()
                         system_info = gather_system_info()
                         conversation = [
@@ -459,61 +485,50 @@ def main():
                 else:
                     COMMANDS[user_input.lower()]()
                 continue
-            else:
+
+            # Then check if input is a valid bash command
+            if is_valid_bash_command(user_input):
+                execute_bash_command(user_input, options)
+                conversation.append({'role': 'system', 'content': f"Command executed: {user_input}"})
+                continue
+
+            # If not a command, process with AI
+            try:
                 conversation.append({'role': 'user', 'content': user_input})
-
-                # Add a rule (separator line) before the assistant's response
-                console.print(Rule())
-
-                # Handle context window size if applicable
-                if options['context_window_size'] > 0:
-                    context_size = options['context_window_size']
-                    recent_conversation = conversation[2:]  # Start from index 2 to keep system info
-                    num_messages_to_keep = context_size * 2  # user and assistant messages
-                    if len(recent_conversation) > num_messages_to_keep:
-                        conversation_trimmed = conversation[:2] + recent_conversation[-num_messages_to_keep:]
-                        warning_message = (
-                            f"[bold yellow]Warning:[/bold yellow] The conversation history exceeds the context window size. "
-                            f"Only the most recent {num_messages_to_keep} messages (plus system messages) will be used for context."
-                        )
-                        console.print(Panel(warning_message, border_style="yellow"))
-                    else:
-                        conversation_trimmed = conversation
+                
+                if options['model_provider'] == 'ollama':
+                    assistant_message = execute_ollama_request(conversation, options)
+                    if assistant_message is None:
+                        continue
                 else:
-                    conversation_trimmed = conversation
-
-                try:
                     response = openai.ChatCompletion.create(
                         model=options['model'],
-                        messages=conversation_trimmed,
+                        messages=conversation,
                         temperature=options['temperature'],
                         max_tokens=options['max_tokens']
                     )
-                except openai.error.OpenAIError as e:
-                    console.print(f"[red]An error occurred: {e}[/red]")
-                    continue
-
-                assistant_message = response['choices'][0]['message']['content']
-
-                # Display the assistant's message
+                    assistant_message = response['choices'][0]['message']['content']
+                
+                # Display the response
+                console.print(Rule())
+                console.print("[bold yellow]Sage:[/bold yellow]")
                 console.print(Markdown(assistant_message))
-
-                # Add assistant message to conversation
+                
+                # Add response to conversation history
                 conversation.append({'role': 'assistant', 'content': assistant_message})
-
-                # Extract bash commands from the assistant's message
+                
+                # Extract and add any bash commands from the response to history
                 bash_commands = extract_bash_commands(assistant_message)
-
-                # Handle bash commands if any were detected
-                if bash_commands:
-                    handle_bash_commands(bash_commands, conversation, options)
+                for cmd in bash_commands:
+                    history.append_string(cmd)
+                    
+            except openai.error.OpenAIError as e:
+                console.print(f"[red]An error occurred: {e}[/red]")
 
         except EOFError:
-            # Handle end of input (Ctrl+D) gracefully
             print("\nExiting program...")
             break
         except KeyboardInterrupt:
-            # Handle Ctrl+C gracefully
             print("\nProgram interrupted. Exiting...")
             break
 

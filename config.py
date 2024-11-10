@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from utils import ensure_sage_setup, load_key, decrypt_api_key, encrypt_api_key
 import sys
+import subprocess
 
 HOME_DIR = str(Path.home())
 SAGE_DIR = os.path.join(HOME_DIR, '.sage')
@@ -15,21 +16,39 @@ API_ENC_FILE = os.path.join(SAGE_DIR, 'api.enc')  # Add this line
 API_KEY_HELP_FILE = "path/to/api_key_help.txt"
 
 DEFAULT_OPTIONS = {
-    'model': 'gpt-4o-mini',
+    'model': 'llama3.2',
+    'model_provider': 'ollama',
     'temperature': 0.3,
     'max_tokens': 1500,
     'context_window_size': 10,
-    'terminal_emulator': 'gnome-terminal'  # New configuration option
+    'terminal_emulator': 'gnome-terminal'
 }
 
 DEFAULT_AVAILABLE_MODELS = [
-    "gpt-4",
-    "gpt-4-turbo",
-    "gpt-3.5-turbo",
-    "gpt-3.5-turbo-16k",
-    "gpt-4o-mini",
-    "gpt-4o"
+    "gpt-4o-mini",  # Preferred OpenAI model
+    "gpt-4o"        # Full version available but not default
 ]
+
+def get_default_model():
+    """Determine the default model based on Ollama availability"""
+    try:
+        ollama_models = get_ollama_models()
+        if 'llama3.2:latest' in ollama_models:
+            return ('llama3.2:latest', 'ollama')
+        return ('gpt-4o-mini', 'openai')
+    except:
+        return ('gpt-4o-mini', 'openai')
+
+# Update DEFAULT_OPTIONS to use the determined default model
+default_model, default_provider = get_default_model()
+DEFAULT_OPTIONS = {
+    'model': default_model,
+    'model_provider': default_provider,
+    'temperature': 0.3,
+    'max_tokens': 1500,
+    'context_window_size': 10,
+    'terminal_emulator': 'gnome-terminal'
+}
 
 def load_options():
     """
@@ -74,20 +93,42 @@ def save_options(options):
     except Exception as e:
         print(f"Error saving options: {e}")
 
+def get_ollama_models():
+    """Get list of installed Ollama models"""
+    try:
+        result = subprocess.run(['ollama', 'list'], capture_output=True, text=True)
+        if result.returncode == 0:
+            # Parse the output to extract model names
+            models = []
+            for line in result.stdout.split('\n')[1:]:  # Skip header line
+                if line.strip():
+                    model_name = line.split()[0]  # First column is model name
+                    models.append(model_name)
+            return models
+        return []
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return []
+
 def load_available_models():
     """
-    Load available models from system-wide models.json.
+    Load available models from both Ollama and OpenAI
     """
+    models = {
+        'ollama': get_ollama_models(),
+        'openai': DEFAULT_AVAILABLE_MODELS.copy()
+    }
+    
     if os.path.exists(MODELS_FILE):
         try:
             with open(MODELS_FILE, 'r') as f:
                 data = json.load(f)
-                return data.get('available_models', DEFAULT_AVAILABLE_MODELS)
+                # Update OpenAI models if specified in models.json
+                if 'available_models' in data:
+                    models['openai'] = data['available_models']
         except json.JSONDecodeError as e:
             print(f"Error loading models: {e}")
-            return DEFAULT_AVAILABLE_MODELS.copy()
-    else:
-        return DEFAULT_AVAILABLE_MODELS.copy()
+    
+    return models
 
 def read_api_key():
     if ensure_sage_setup():
